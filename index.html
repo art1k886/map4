@@ -679,6 +679,8 @@
   let loadedImages = new Set();
   let draggedFeatureId = null;
   let hoveredDroneId = null;
+  let initialRotation = 0;
+  let initialTouchAngle = 0;
 
   const ICON_AUTO_COLORS = {
     'gerbera.png': '#ef4444',
@@ -925,6 +927,13 @@
     }
   }
 
+  // Вспомогательная функция расчёта угла между 2 касаниями в градусах
+  function getTouchAngle(t1, t2) {
+    const dx = t2.clientX - t1.clientX;
+    const dy = t2.clientY - t1.clientY;
+    return Math.atan2(dy, dx) * 180 / Math.PI;
+  }
+
   map.on('load', async () => {
     const mapContainer = map.getCanvasContainer();
     mapContainer.style.position = 'relative';
@@ -951,14 +960,12 @@
     resizeCanvases();
     map.on('resize', resizeCanvases);
 
-    // ПОЛНОСТЬЮ ОТКЛЮЧЕННЫЙ РАДИУС И КРУГИ
     window.drawRadiusCanvas = function() {
       const ctx = radiusCanvas.getContext('2d');
       ctx.clearRect(0, 0, radiusCanvas.width, radiusCanvas.height);
       return;
     };
 
-    // ОТРИСОВКА ИКОНОК С СОХРАНЕНИЕМ ИСХОДНЫХ ПРОПОРЦИЙ (БЕЗ СПЛЮЩИВАНИЯ И БЕЗ СТРЕЛОК)
     window.drawDroneCanvas = function() {
       const ctx = droneCanvas.getContext('2d');
       ctx.clearRect(0, 0, droneCanvas.width, droneCanvas.height);
@@ -978,7 +985,6 @@
         const imgEls = document.querySelectorAll(`img[src="icons/${fileName}"]`);
         if (imgEls.length > 0 && imgEls[0].complete && imgEls[0].naturalWidth > 0) {
           const img = imgEls[0];
-          // Вычисление исходных пропорций для избежания плющения
           const aspect = img.naturalWidth / img.naturalHeight;
           let drawW = 32 * dpr;
           let drawH = 32 * dpr;
@@ -1016,6 +1022,7 @@
 
     const mapCanvasEl = map.getCanvas();
 
+    // --- ОБРАБОТКА МЫШИ (ПК) ---
     mapCanvasEl.addEventListener('mousedown', (e) => {
       const pt = [e.clientX, e.clientY];
       for (const feat of activeFeatures) {
@@ -1061,6 +1068,77 @@
         map.dragPan.enable();
       }
     });
+
+    // --- ОБРАБОТКА СЕНСОРА И МУЛЬТИТАЧА (ТЕЛЕФОН / ПЛАНШЕТ) ---
+    mapCanvasEl.addEventListener('touchstart', (e) => {
+      if (e.touches.length === 1) {
+        const touch = e.touches[0];
+        const pt = [touch.clientX, touch.clientY];
+
+        for (const feat of activeFeatures) {
+          const fPt = map.project(feat.geometry.coordinates);
+          if (Math.hypot(fPt.x - pt[0], fPt.y - pt[1]) <= 35) {
+            draggedFeatureId = feat.properties.id;
+            hoveredDroneId = feat.properties.id;
+            map.dragPan.disable();
+            map.touchZoomRotate.disable();
+            break;
+          }
+        }
+      } else if (e.touches.length === 2 && draggedFeatureId) {
+        // Захват 2-х пальцев для кручения БПЛА
+        const feat = activeFeatures.find(f => f.properties.id === draggedFeatureId);
+        if (feat) {
+          initialRotation = feat.properties.rotation || 0;
+          initialTouchAngle = getTouchAngle(e.touches[0], e.touches[1]);
+        }
+      }
+    }, { passive: false });
+
+    mapCanvasEl.addEventListener('touchmove', (e) => {
+      if (!draggedFeatureId) return;
+
+      e.preventDefault(); // Запрещаем стандартную прокрутку страницы/карты
+
+      if (e.touches.length === 1) {
+        // Перемещение маркера одним пальцем
+        const touch = e.touches[0];
+        const lngLat = map.unproject([touch.clientX, touch.clientY]);
+        const feat = activeFeatures.find(f => f.properties.id === draggedFeatureId);
+        if (feat) {
+          feat.geometry.coordinates = [lngLat.lng, lngLat.lat];
+          window.drawDroneCanvas();
+        }
+      } else if (e.touches.length === 2) {
+        // Вращение двумя пальцами
+        const currentAngle = getTouchAngle(e.touches[0], e.touches[1]);
+        const angleDiff = currentAngle - initialTouchAngle;
+        const feat = activeFeatures.find(f => f.properties.id === draggedFeatureId);
+
+        if (feat) {
+          feat.properties.rotation = Math.round((initialRotation + angleDiff + 360) % 360);
+          window.drawDroneCanvas();
+        }
+      }
+    }, { passive: false });
+
+    const handleTouchEnd = (e) => {
+      if (e.touches.length === 0) {
+        draggedFeatureId = null;
+        hoveredDroneId = null;
+        map.dragPan.enable();
+        map.touchZoomRotate.enable();
+      } else if (e.touches.length === 1 && draggedFeatureId) {
+        // При переходе от 2 пальцев к 1 пересчитываем позицию без резких скачков
+        const feat = activeFeatures.find(f => f.properties.id === draggedFeatureId);
+        if (feat) {
+          initialRotation = feat.properties.rotation || 0;
+        }
+      }
+    };
+
+    mapCanvasEl.addEventListener('touchend', handleTouchEnd);
+    mapCanvasEl.addEventListener('touchcancel', handleTouchEnd);
 
     // БЛОКИРОВКА ЗУМА КАРТЫ ПРИ ВРАЩЕНИИ КОЛЕСИКОМ МЫШИ НАД ИКОНКОЙ
     window.addEventListener('wheel', (e) => {
