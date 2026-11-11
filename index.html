@@ -238,6 +238,12 @@
       text-shadow: 0 1px 2px rgba(255,255,255,0.9), 0 -1px 2px rgba(255,255,255,0.9);
     }
 
+    .screenshot-buttons-wrapper {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
     .screenshot-btn {
       background: #2563eb;
       color: white;
@@ -251,6 +257,44 @@
       cursor: pointer;
       font-weight: 700;
       font-size: 10px;
+      transition: background 0.2s;
+    }
+    .screenshot-btn:hover { background: #1d4ed8; }
+    .screenshot-btn.secondary-action {
+      background: #7c3aed;
+    }
+    .screenshot-btn.secondary-action:hover { background: #6d28d9; }
+
+    /* Оверлей выделения области для кропа */
+    #crop-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 5000;
+      cursor: crosshair;
+      display: none;
+      user-select: none;
+    }
+    #crop-selection-box {
+      position: absolute;
+      border: 2px dashed #38bdf8;
+      background: rgba(56, 189, 248, 0.2);
+      pointer-events: none;
+      display: none;
+    }
+    .crop-instructions {
+      position: absolute;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(18, 18, 18, 0.95);
+      color: #38bdf8;
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 700;
+      border: 1px solid rgba(56, 189, 248, 0.4);
+      pointer-events: none;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.5);
     }
 
     .control-btn.delete {
@@ -277,7 +321,7 @@
       border-radius: 20px;
       font-size: 12px;
       font-weight: 600;
-      z-index: 4000;
+      z-index: 6000;
       pointer-events: none;
       opacity: 0;
       transition: opacity 0.3s ease;
@@ -452,6 +496,11 @@
 <div id="map"></div>
 <div id="watermark-layer"></div>
 
+<div id="crop-overlay">
+  <div class="crop-instructions">Затисніть і потягніть мишкою, щоб виділити область для скриншота</div>
+  <div id="crop-selection-box"></div>
+</div>
+
 <button class="settings-btn" id="settings-btn" title="Налаштування">
   <svg viewBox="0 0 24 24">
     <circle cx="12" cy="12" r="3"/>
@@ -465,6 +514,19 @@
     <button class="settings-close" id="settings-close" type="button" aria-label="Закрити налаштування"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
   </div>
   <div class="settings-menu-body">
+    <div class="settings-group">
+      <div class="settings-group-title">Вигляд карти (Шар)</div>
+      <div class="settings-row-vertical">
+        <div class="settings-label">Оберіть основний шар карти</div>
+        <select id="map-style-select" class="select-input">
+          <option value="osm" selected>OpenStreetMap (стандартний)</option>
+          <option value="maptiler">MapTiler (користувацький шар)</option>
+          <option value="google_hybrid">Google Maps Hybrid (Супутник + мітки)</option>
+          <option value="google_terrain">Google Maps Terrain (Рельєф)</option>
+        </select>
+      </div>
+    </div>
+
     <div class="settings-group">
       <div class="settings-group-title">Дисклеймер</div>
       <div class="settings-row">
@@ -652,9 +714,14 @@
     </div>
   </div>
 
-  <button class="screenshot-btn" onclick="takeShostkaScreenshot()">
-    Скриншот Шосткинського району (1:1)
-  </button>
+  <div class="screenshot-buttons-wrapper">
+    <button class="screenshot-btn" onclick="takeShostkaScreenshot()">
+      Скриншот Шосткинського району (1:1)
+    </button>
+    <button class="screenshot-btn secondary-action" onclick="startCustomCropScreenshot()">
+      Виборний скрін
+    </button>
+  </div>
 </div>
 
 <div class="legend-panel" id="legend-panel">
@@ -672,15 +739,87 @@
     [34.35, 52.35]
   ];
 
-  const STORAGE_KEY = 'shostka_map_settings_v15';
+  const STORAGE_KEY = 'shostka_map_settings_v19';
 
   let activeFeatures = [];
   let markerCounters = {};
   let loadedImages = new Set();
   let draggedFeatureId = null;
   let hoveredDroneId = null;
-  let initialRotation = 0;
-  let initialTouchAngle = 0;
+
+  const MAP_STYLES = {
+    osm: {
+      version: 8,
+      sources: {
+        'osm-tiles': {
+          type: 'raster',
+          tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+          tileSize: 256,
+          attribution: '&copy; OpenStreetMap contributors'
+        }
+      },
+      layers: [
+        {
+          id: 'osm-tiles-layer',
+          type: 'raster',
+          source: 'osm-tiles',
+          minzoom: 0,
+          maxzoom: 19
+        }
+      ]
+    },
+    maptiler: 'https://api.maptiler.com/maps/01a1ca7b-68b7-7efe-9914-0b0809c29c25/style.json?key=SK6FbzQNBVckXbWkLk5G',
+    google_hybrid: {
+      version: 8,
+      sources: {
+        'google-hybrid-tiles': {
+          type: 'raster',
+          tiles: [
+            'https://mt0.google.com/vt/lyrs=y&hl=uk&x={x}&y={y}&z={z}',
+            'https://mt1.google.com/vt/lyrs=y&hl=uk&x={x}&y={y}&z={z}',
+            'https://mt2.google.com/vt/lyrs=y&hl=uk&x={x}&y={y}&z={z}',
+            'https://mt3.google.com/vt/lyrs=y&hl=uk&x={x}&y={y}&z={z}'
+          ],
+          tileSize: 256,
+          attribution: '&copy; Google Maps'
+        }
+      },
+      layers: [
+        {
+          id: 'google-hybrid-layer',
+          type: 'raster',
+          source: 'google-hybrid-tiles',
+          minzoom: 0,
+          maxzoom: 22
+        }
+      ]
+    },
+    google_terrain: {
+      version: 8,
+      sources: {
+        'google-terrain-tiles': {
+          type: 'raster',
+          tiles: [
+            'https://mt0.google.com/vt/lyrs=p&hl=uk&x={x}&y={y}&z={z}',
+            'https://mt1.google.com/vt/lyrs=p&hl=uk&x={x}&y={y}&z={z}',
+            'https://mt2.google.com/vt/lyrs=p&hl=uk&x={x}&y={y}&z={z}',
+            'https://mt3.google.com/vt/lyrs=p&hl=uk&x={x}&y={y}&z={z}'
+          ],
+          tileSize: 256,
+          attribution: '&copy; Google Maps'
+        }
+      },
+      layers: [
+        {
+          id: 'google-terrain-layer',
+          type: 'raster',
+          source: 'google-terrain-tiles',
+          minzoom: 0,
+          maxzoom: 22
+        }
+      ]
+    }
+  };
 
   const ICON_AUTO_COLORS = {
     'gerbera.png': '#ef4444',
@@ -701,6 +840,7 @@
     'фпв.png': '#ef4444'
   };
 
+  const mapStyleSelect = document.getElementById('map-style-select');
   const disclaimerEnabled = document.getElementById('disclaimer-enabled');
   const disclaimerTextInput = document.getElementById('disclaimer-text-input');
   const disclaimerTextColor = document.getElementById('disclaimer-text-color');
@@ -711,7 +851,7 @@
   const disclaimerWidth = document.getElementById('disclaimer-width');
   const disclaimerWidthVal = document.getElementById('disclaimer-width-val');
   const disclaimerFontSize = document.getElementById('disclaimer-font-size');
-  const disclaimerFontSizeVal = document.getElementById('disclaimer-font-size-val');
+  const disclaimerFontSizeVal = document.getElementById('disclaimer-font-size-value');
 
   const legendPanel = document.getElementById('legend-panel');
   const disclaimerTextView = document.getElementById('disclaimer-text-view');
@@ -730,6 +870,7 @@
   const watermarkLayer = document.getElementById('watermark-layer');
 
   const defaultSettings = {
+    mapStyle: 'osm',
     disclaimer: {
       enabled: true,
       text: 'Мапа не є військовою. Усі дані взяті з відкритих телеграм-каналів і можуть бути неточними.',
@@ -754,6 +895,7 @@
   function saveSettings() {
     try {
       const settings = {
+        mapStyle: mapStyleSelect.value,
         disclaimer: {
           enabled: disclaimerEnabled.checked,
           text: disclaimerTextInput.value,
@@ -788,7 +930,20 @@
     }
   }
 
+  const initialSettings = loadSettings();
+
+  const map = new maplibregl.Map({
+    container: 'map',
+    preserveDrawingBuffer: true,
+    style: MAP_STYLES[initialSettings.mapStyle] || MAP_STYLES.osm,
+    center: SHOSTKA_CENTER,
+    zoom: TARGET_ZOOM
+  });
+
   function applySettings(s) {
+    if (s.mapStyle && mapStyleSelect) {
+      mapStyleSelect.value = s.mapStyle;
+    }
     if (s.disclaimer) {
       disclaimerEnabled.checked = s.disclaimer.enabled !== false;
       disclaimerTextInput.value = s.disclaimer.text || defaultSettings.disclaimer.text;
@@ -818,33 +973,6 @@
     renderDisclaimerPanel();
     renderWatermark();
   }
-
-  const map = new maplibregl.Map({
-    container: 'map',
-    preserveDrawingBuffer: true,
-    style: {
-      version: 8,
-      sources: {
-        'osm-tiles': {
-          type: 'raster',
-          tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
-          tileSize: 256,
-          attribution: '&copy; OpenStreetMap contributors'
-        }
-      },
-      layers: [
-        {
-          id: 'osm-tiles-layer',
-          type: 'raster',
-          source: 'osm-tiles',
-          minzoom: 0,
-          maxzoom: 19
-        }
-      ]
-    },
-    center: SHOSTKA_CENTER,
-    zoom: TARGET_ZOOM
-  });
 
   function applyPanelPosition(el, posH, posV) {
     el.style.left = '';
@@ -925,13 +1053,6 @@
         watermarkLayer.appendChild(tile);
       }
     }
-  }
-
-  // Вспомогательная функция расчёта угла между 2 касаниями в градусах
-  function getTouchAngle(t1, t2) {
-    const dx = t2.clientX - t1.clientX;
-    const dy = t2.clientY - t1.clientY;
-    return Math.atan2(dy, dx) * 180 / Math.PI;
   }
 
   map.on('load', async () => {
@@ -1022,7 +1143,6 @@
 
     const mapCanvasEl = map.getCanvas();
 
-    // --- ОБРАБОТКА МЫШИ (ПК) ---
     mapCanvasEl.addEventListener('mousedown', (e) => {
       const pt = [e.clientX, e.clientY];
       for (const feat of activeFeatures) {
@@ -1069,78 +1189,6 @@
       }
     });
 
-    // --- ОБРАБОТКА СЕНСОРА И МУЛЬТИТАЧА (ТЕЛЕФОН / ПЛАНШЕТ) ---
-    mapCanvasEl.addEventListener('touchstart', (e) => {
-      if (e.touches.length === 1) {
-        const touch = e.touches[0];
-        const pt = [touch.clientX, touch.clientY];
-
-        for (const feat of activeFeatures) {
-          const fPt = map.project(feat.geometry.coordinates);
-          if (Math.hypot(fPt.x - pt[0], fPt.y - pt[1]) <= 35) {
-            draggedFeatureId = feat.properties.id;
-            hoveredDroneId = feat.properties.id;
-            map.dragPan.disable();
-            map.touchZoomRotate.disable();
-            break;
-          }
-        }
-      } else if (e.touches.length === 2 && draggedFeatureId) {
-        // Захват 2-х пальцев для кручения БПЛА
-        const feat = activeFeatures.find(f => f.properties.id === draggedFeatureId);
-        if (feat) {
-          initialRotation = feat.properties.rotation || 0;
-          initialTouchAngle = getTouchAngle(e.touches[0], e.touches[1]);
-        }
-      }
-    }, { passive: false });
-
-    mapCanvasEl.addEventListener('touchmove', (e) => {
-      if (!draggedFeatureId) return;
-
-      e.preventDefault(); // Запрещаем стандартную прокрутку страницы/карты
-
-      if (e.touches.length === 1) {
-        // Перемещение маркера одним пальцем
-        const touch = e.touches[0];
-        const lngLat = map.unproject([touch.clientX, touch.clientY]);
-        const feat = activeFeatures.find(f => f.properties.id === draggedFeatureId);
-        if (feat) {
-          feat.geometry.coordinates = [lngLat.lng, lngLat.lat];
-          window.drawDroneCanvas();
-        }
-      } else if (e.touches.length === 2) {
-        // Вращение двумя пальцами
-        const currentAngle = getTouchAngle(e.touches[0], e.touches[1]);
-        const angleDiff = currentAngle - initialTouchAngle;
-        const feat = activeFeatures.find(f => f.properties.id === draggedFeatureId);
-
-        if (feat) {
-          feat.properties.rotation = Math.round((initialRotation + angleDiff + 360) % 360);
-          window.drawDroneCanvas();
-        }
-      }
-    }, { passive: false });
-
-    const handleTouchEnd = (e) => {
-      if (e.touches.length === 0) {
-        draggedFeatureId = null;
-        hoveredDroneId = null;
-        map.dragPan.enable();
-        map.touchZoomRotate.enable();
-      } else if (e.touches.length === 1 && draggedFeatureId) {
-        // При переходе от 2 пальцев к 1 пересчитываем позицию без резких скачков
-        const feat = activeFeatures.find(f => f.properties.id === draggedFeatureId);
-        if (feat) {
-          initialRotation = feat.properties.rotation || 0;
-        }
-      }
-    };
-
-    mapCanvasEl.addEventListener('touchend', handleTouchEnd);
-    mapCanvasEl.addEventListener('touchcancel', handleTouchEnd);
-
-    // БЛОКИРОВКА ЗУМА КАРТЫ ПРИ ВРАЩЕНИИ КОЛЕСИКОМ МЫШИ НАД ИКОНКОЙ
     window.addEventListener('wheel', (e) => {
       if (!hoveredDroneId) return;
       e.preventDefault();
@@ -1154,7 +1202,16 @@
       }
     }, { passive: false, capture: true });
 
-    applySettings(loadSettings());
+    applySettings(initialSettings);
+  });
+
+  mapStyleSelect.addEventListener('change', () => {
+    const selectedStyleKey = mapStyleSelect.value;
+    const styleObj = MAP_STYLES[selectedStyleKey];
+    if (styleObj) {
+      map.setStyle(styleObj);
+      saveSettings();
+    }
   });
 
   disclaimerEnabled.addEventListener('change', () => { renderDisclaimerPanel(); saveSettings(); });
@@ -1295,6 +1352,7 @@
     window.drawDroneCanvas && window.drawDroneCanvas();
   }
 
+  // Функция стандартного скриншота Шосткинского района
   async function takeShostkaScreenshot() {
     const uiPanel = document.getElementById('ui-panel');
     const toast = document.getElementById('toast');
@@ -1411,7 +1469,7 @@
       outCanvas.toBlob(blob => {
         if (blob && navigator.clipboard && window.ClipboardItem) {
           navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]).then(() => {
-            toast.textContent = 'Ідеальний скриншот скопійовано!';
+            toast.textContent = 'Скриншот району скопійовано!';
             toast.classList.add('show');
             setTimeout(() => toast.classList.remove('show'), 2500);
           });
@@ -1423,6 +1481,213 @@
     } finally {
       uiPanel.style.display = 'flex';
       settingsBtn.style.display = 'flex';
+    }
+  }
+
+  // Функция «Виборний скрін»: выделение области для создания произвольного скриншота
+  function startCustomCropScreenshot() {
+    const uiPanel = document.getElementById('ui-panel');
+    const settingsBtnEl = document.getElementById('settings-btn');
+    const settingsMenuEl = document.getElementById('settings-menu');
+    const cropOverlay = document.getElementById('crop-overlay');
+    const selectionBox = document.getElementById('crop-selection-box');
+
+    uiPanel.style.display = 'none';
+    settingsBtnEl.style.display = 'none';
+    settingsMenuEl.style.display = 'none';
+    cropOverlay.style.display = 'block';
+
+    let startX = 0, startY = 0;
+    let isDrawing = false;
+
+    function cleanup() {
+      cropOverlay.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      cropOverlay.style.display = 'none';
+      selectionBox.style.display = 'none';
+      uiPanel.style.display = 'flex';
+      settingsBtnEl.style.display = 'flex';
+    }
+
+    function onMouseDown(e) {
+      isDrawing = true;
+      startX = e.clientX;
+      startY = e.clientY;
+      selectionBox.style.left = startX + 'px';
+      selectionBox.style.top = startY + 'px';
+      selectionBox.style.width = '0px';
+      selectionBox.style.height = '0px';
+      selectionBox.style.display = 'block';
+    }
+
+    function onMouseMove(e) {
+      if (!isDrawing) return;
+      const currentX = Math.min(startX, e.clientX);
+      const currentY = Math.min(startY, e.clientY);
+      const currentW = Math.abs(e.clientX - startX);
+      const currentH = Math.abs(e.clientY - startY);
+
+      selectionBox.style.left = currentX + 'px';
+      selectionBox.style.top = currentY + 'px';
+      selectionBox.style.width = currentW + 'px';
+      selectionBox.style.height = currentH + 'px';
+    }
+
+    async function onMouseUp(e) {
+      if (!isDrawing) return;
+      isDrawing = false;
+
+      const rect = {
+        left: Math.min(startX, e.clientX),
+        top: Math.min(startY, e.clientY),
+        width: Math.abs(e.clientX - startX),
+        height: Math.abs(e.clientY - startY)
+      };
+
+      cleanup();
+
+      if (rect.width > 10 && rect.height > 10) {
+        await renderCustomCrop(rect);
+      }
+    }
+
+    cropOverlay.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+  }
+
+  // Отрисовка кроп-скриншота с правильной вырезкой области и уплотненным дисклеймером
+  async function renderCustomCrop(rect) {
+    const toast = document.getElementById('toast');
+    try {
+      const mapCanvas = map.getCanvas();
+      const mapRect = mapCanvas.getBoundingClientRect();
+
+      const dprX = mapCanvas.width / mapRect.width;
+      const dprY = mapCanvas.height / mapRect.height;
+
+      const scale = 3;
+      const outCanvas = document.createElement('canvas');
+      outCanvas.width = rect.width * scale;
+      outCanvas.height = rect.height * scale;
+
+      const ctx = outCanvas.getContext('2d');
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+
+      const sx = (rect.left - mapRect.left) * dprX;
+      const sy = (rect.top - mapRect.top) * dprY;
+      const sw = rect.width * dprX;
+      const sh = rect.height * dprY;
+
+      // 1. Рисуем выбранную область карты
+      ctx.drawImage(
+        mapCanvas,
+        sx, sy, sw, sh,
+        0, 0, outCanvas.width, outCanvas.height
+      );
+
+      // 2. Рисуем слой БПЛА
+      const droneCanvas = document.getElementById('drone-canvas');
+      if (droneCanvas) {
+        ctx.drawImage(
+          droneCanvas,
+          sx, sy, sw, sh,
+          0, 0, outCanvas.width, outCanvas.height
+        );
+      }
+
+      // 3. Рисуем дисклеймер по размеру рамочки
+      if (disclaimerEnabled.checked) {
+        ctx.save();
+        ctx.scale(scale, scale);
+        const fontSize = parseInt(disclaimerFontSize.value, 10);
+        const userWidth = parseInt(disclaimerWidth.value, 10);
+        const fontWidth = Math.min(userWidth, rect.width - 20);
+
+        ctx.font = `${fontSize}px 'ShriftFont', 'Inter', sans-serif`;
+        ctx.fillStyle = disclaimerTextColor.value;
+        ctx.globalAlpha = parseInt(disclaimerOpacitySlider.value, 10) / 100;
+
+        const pad = 10;
+        const text = disclaimerTextInput.value;
+        const posH = disclaimerPosH.value;
+        const posV = disclaimerPosV.value;
+
+        const discX = posH === 'right' ? (rect.width - fontWidth - pad) : (posH === 'center' ? (rect.width - fontWidth) / 2 : pad);
+
+        const words = text.split(' ');
+        let lines = [];
+        let line = '';
+        for (let n = 0; n < words.length; n++) {
+          let testLine = line + words[n] + ' ';
+          if (ctx.measureText(testLine).width > fontWidth && n > 0) {
+            lines.push(line);
+            line = words[n] + ' ';
+          } else {
+            line = testLine;
+          }
+        }
+        lines.push(line);
+
+        const textBlockHeight = lines.length * (fontSize + 4);
+        const discY = posV === 'top' ? pad : (rect.height - textBlockHeight - pad);
+
+        let curY = discY + fontSize;
+        for (let l of lines) {
+          ctx.fillText(l, discX, curY);
+          curY += fontSize + 4;
+        }
+        ctx.restore();
+      }
+
+      // 4. Водяной знак по размерам области
+      if (watermarkEnabled.checked) {
+        ctx.save();
+        ctx.scale(scale, scale);
+        const wmText = watermarkText.value.trim() || 'ШОСТКА • ОГЛЯД';
+        const wmSize = parseInt(watermarkSizeSlider.value, 10);
+        const wmDensity = parseInt(watermarkDensitySlider.value, 10);
+        const wmAngle = parseInt(watermarkAngleSlider.value, 10);
+
+        ctx.font = `800 ${wmSize}px "Inter", sans-serif`;
+        ctx.fillStyle = watermarkColor.value;
+        ctx.globalAlpha = parseInt(watermarkOpacitySlider.value, 10) / 100;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+
+        const cols = Math.max(1, Math.round(Math.sqrt(wmDensity)));
+        const rows = Math.max(1, Math.round(wmDensity / cols));
+        const cellW = rect.width / cols;
+        const cellH = rect.height / rows;
+
+        for (let r = 0; r < rows; r++) {
+          for (let c = 0; c < cols; c++) {
+            const x = c * cellW + cellW / 2;
+            const y = r * cellH + cellH / 2;
+            ctx.save();
+            ctx.translate(x, y);
+            ctx.rotate(wmAngle * Math.PI / 180);
+            ctx.fillText(wmText, 0, 0);
+            ctx.restore();
+          }
+        }
+        ctx.restore();
+      }
+
+      outCanvas.toBlob(blob => {
+        if (blob && navigator.clipboard && window.ClipboardItem) {
+          navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]).then(() => {
+            toast.textContent = 'Виборний скрін скопійовано!';
+            toast.classList.add('show');
+            setTimeout(() => toast.classList.remove('show'), 2500);
+          });
+        }
+      });
+
+    } catch (err) {
+      console.error(err);
     }
   }
 </script>
